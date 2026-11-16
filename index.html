@@ -711,6 +711,12 @@
       </button>
     </div>
     <div class="exportrow">
+      <button class="exportbtn" id="resendReceiptsBtn">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M12 16V4M7 9l5-5 5 5M5 20h14" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Reenviar todas las facturas a Drive
+      </button>
+    </div>
+    <div class="exportrow">
       <button class="exportbtn" id="backupExportBtn">
         <svg viewBox="0 0 24 24" fill="none"><path d="M12 3v12M7 10l5 5 5-5M5 21h14" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
         Exportar respaldo (JSON)
@@ -862,8 +868,8 @@ function detachListeners(){
 function buildSheetData(){
   const cur0 = state.currency;
   const txs = [...state.transactions].sort((a,b)=> a.date.localeCompare(b.date) || (a.createdAt||'').localeCompare(b.createdAt||''));
-  const movimientos = [['Fecha','Tipo','Categoría','Nota','Monto','Moneda','Con factura']].concat(
-    txs.map(t=>[ t.date, t.type==='ingreso' ? 'Ingreso' : 'Gasto', t.category, t.note||'', t.amount, t.currency||cur0, t.receiptData ? 'Sí' : 'No' ])
+  const movimientos = [['Fecha','Tipo','Categoría','Nota','Monto','Moneda','Con factura','ID']].concat(
+    txs.map(t=>[ t.date, t.type==='ingreso' ? 'Ingreso' : 'Gasto', t.category, t.note||'', t.amount, t.currency||cur0, t.receiptData ? 'Sí' : 'No', t.id ])
   );
   const today = todayISO();
   const pend = [...state.pending].sort((a,b)=> a.dueDate.localeCompare(b.dueDate));
@@ -898,16 +904,41 @@ function scheduleSheetSync(){
   clearTimeout(sheetSyncTimer);
   sheetSyncTimer = setTimeout(syncToSheet, 2500);
 }
+function getSentReceipts(){
+  try{ return new Set(JSON.parse(localStorage.getItem('finz_receipts_sent') || '[]')); }
+  catch(e){ return new Set(); }
+}
+function saveSentReceipts(set){
+  try{ localStorage.setItem('finz_receipts_sent', JSON.stringify(Array.from(set))); }catch(e){}
+}
+function postToSheet(payload){
+  return fetch(state.sheetUrl, {
+    method:'POST',
+    mode:'no-cors',
+    headers:{ 'Content-Type':'text/plain;charset=utf-8' },
+    body: JSON.stringify(payload)
+  });
+}
+async function sendReceiptsToDrive(){
+  const sent = getSentReceipts();
+  const pending = state.transactions.filter(t=> t.receiptData && !sent.has(t.id));
+  for(let i=0; i<pending.length; i+=3){
+    const batch = pending.slice(i, i+3);
+    setSheetStatus('Subiendo facturas a Drive (' + Math.min(i+3, pending.length) + '/' + pending.length + ')…');
+    await postToSheet({ recibos: batch.map(t=>({
+      id:t.id, fecha:t.date, categoria:t.category, monto:t.amount,
+      moneda:t.currency || state.currency, data:t.receiptData
+    })) });
+    batch.forEach(t=>sent.add(t.id));
+    saveSentReceipts(sent);
+  }
+}
 async function syncToSheet(){
   if(!state.sheetUrl || !auth.currentUser) return;
   setSheetStatus('Sincronizando…');
   try{
-    await fetch(state.sheetUrl, {
-      method:'POST',
-      mode:'no-cors',
-      headers:{ 'Content-Type':'text/plain;charset=utf-8' },
-      body: JSON.stringify(buildSheetData())
-    });
+    await sendReceiptsToDrive();
+    await postToSheet(buildSheetData());
     setSheetStatus('Enviado a Google Sheets · ' + new Date().toLocaleTimeString('es-CO',{hour:'2-digit',minute:'2-digit'}));
   }catch(err){
     console.error(err);
@@ -926,7 +957,7 @@ async function exportXlsx(){
       ws['!cols'] = widths.map(w=>({ wch:w }));
       return ws;
     };
-    XLSX.utils.book_append_sheet(wb, mk(d.movimientos, [12,10,22,32,14,9,12]), 'Movimientos');
+    XLSX.utils.book_append_sheet(wb, mk(d.movimientos.map(r=>r.slice(0,7)), [12,10,22,32,14,9,12]), 'Movimientos');
     XLSX.utils.book_append_sheet(wb, mk(d.pendientes, [28,14,9,22,12,12]), 'Pendientes');
     XLSX.utils.book_append_sheet(wb, mk(d.resumen, [18,9,16,16,16]), 'Resumen mensual');
     XLSX.writeFile(wb, 'finanzas_' + todayISO() + '.xlsx');
@@ -950,6 +981,13 @@ document.getElementById('sheetSaveBtn').addEventListener('click', async ()=>{
     if(url){ await syncToSheet(); toast('Sincronización activada'); }
     else { setSheetStatus('Sin conectar'); toast('Sincronización desactivada'); }
   }catch(err){ toast('No se pudo guardar la URL'); }
+});
+
+document.getElementById('resendReceiptsBtn').addEventListener('click', async ()=>{
+  if(!state.sheetUrl){ toast('Primero conecta la URL del script'); return; }
+  try{ localStorage.removeItem('finz_receipts_sent'); }catch(e){}
+  await syncToSheet();
+  toast('Facturas enviadas a Drive');
 });
 
 function mergedCats(type){
