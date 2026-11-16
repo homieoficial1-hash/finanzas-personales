@@ -926,7 +926,7 @@ async function sendReceiptsToDrive(){
     const batch = pending.slice(i, i+3);
     setSheetStatus('Subiendo facturas a Drive (' + Math.min(i+3, pending.length) + '/' + pending.length + ')…');
     await postToSheet({ recibos: batch.map(t=>({
-      id:t.id, fecha:t.date, categoria:t.category, monto:t.amount,
+      id:t.id, fecha:t.date, tipo:t.type, categoria:t.category, monto:t.amount,
       moneda:t.currency || state.currency, data:t.receiptData
     })) });
     batch.forEach(t=>sent.add(t.id));
